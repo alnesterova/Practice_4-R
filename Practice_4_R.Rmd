@@ -1,0 +1,184 @@
+---
+title: "Упражнение 4"
+author: "Нестерова А.И."
+date: "03 04 2021"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Аналитический пакет R
+
+### Создание статических картограмм
+
+С помощью «knitr» создать html-отчёт с короткими пояснениями к данным и с двумя картами:
+1. Карта-хороплет регионов РФ, входящих в состав федерального округа, указанного в варианте, построенная функцией spplot() по данным сборников “Регионы России” за последний доступный год.
+2. Такая же карта но со статистикой за 2010 год, построенная функцией ggplot().
+
+В отчёт включить код загрузки данных. Данные можно предварительно подготовить для отображения и сохранить в .csv файле в репозитории на github. Данные по регионам можно загрузить в R напрямую с Росстата функцией из репозитория: https://github.com/nillsondg/r_gks_stat_data. Разместить отчёт на RPubs, его код – на github, и отправить ссылки на них на почту s.aksuk@kiber-guu.ru.
+
+### Вариант-13
+
+Южный федеральный округ, любой показатель из раздела «Население».
+
+Состав ЮФО: Республика Адыгея, Астраханская область, Волгоградская область, Республика Калмыкия, Краснодарский край, Ростовская область, Республика Крым, г. Севастополь.
+
+```{r Загрузка пакетов, warning = F, message = F}
+library('R.utils')               # gunzip() для распаковки архивов 
+library('sp')                    # функция spplot()
+library('ggplot2')               # функция ggplot()
+library('RColorBrewer')          # цветовые палитры
+require('rgdal')                 # функция readOGR()
+library('broom')                 # функция tidy()
+require('dplyr')                 # функция join()
+library('scales')                # функция pretty_breaks()
+library('mapproj')               # проекции для карт
+library('gpclib')
+library('maptools')
+library('sf')
+# разрешить использовать полигональную геометрию, которая защищена лицензией 
+gpclibPermit()
+```
+
+### Загрузка файла с адм-территориальными границами РФ в формате shp и отбор регионов, входящих в ЮФО
+
+```{r Загрузка карты, warning = F, message = F}
+# административная карта Российской федерации
+# источник данных: https://mydata.biz/
+# загрузка архив 
+file.URL <- 'https://mydata.biz/storage/download/6edf5ac83a494c05afa7f7cf9399780f/%D0%90%D0%B4%D0%BC-%D1%82%D0%B5%D1%80%D1%80%D0%B8%D1%82%D0%BE%D1%80%D0%B8%D0%B0%D0%BB%D1%8C%D0%BD%D1%8B%D0%B5%20%D0%B3%D1%80%D0%B0%D0%BD%D0%B8%D1%86%D1%8B%20%D0%A0%D0%A4%20%D0%B2%20%D1%84%D0%BE%D1%80%D0%BC%D0%B0%D1%82%D0%B5%20SHP.zip'
+if (!file.exists('RUS_shp.zip'))  download.file(file.URL, destfile = 'RUS_shp.zip',
+                                           mode = 'wb', cacheOK = FALSE)
+# распаковка
+if (!file.exists('./admin_level_4.shp')) unzip('RUS_shp.zip', overwrite = T)
+
+# чтение данных уровня 4
+Regions <- readOGR('./admin_level_4.shp')
+
+# имена слотов
+slotNames(Regions)
+
+# картограмма России, на которой каждая область залита своим цветом
+# делаем фактор из имён областей (т.е. нумеруем их)
+Regions@data$name_ru <- as.factor(Regions@data$name_ru)
+Regions@data$name_ru
+
+# отбор регионов, входящих в ЮФО
+SFO <- c("Адыгея", "Калмыкия", "Республика Крым", "Краснодарский край", "Волгоградская область",                                 "Астраханская область", "Ростовская область", "Севастополь")
+Regions <- Regions[Regions@data$name_ru %in% SFO, ]
+# убираем дубликат по г. Севастополь
+Regions <- Regions[!duplicated(Regions@data$name_ru),]
+```
+
+### Загрузка данных с Росстата из раздела «Население»
+
+```{r Загрузка данных, warning = F, message = F}
+# загрузка функции для выгрузки данных с Росстата
+GKS <- source("https://raw.githubusercontent.com/nillsondg/r_gks_stat_data/master/gks.R")
+
+# загрузка данных по численности населения
+file.URL <- 'https://gks.ru/bgd/regl/b20_14p/IssWWW.exe/Stg/d01/02-01.docx'
+download.file(file.URL, destfile = '02-01.docx',
+              mode = 'wb', cacheOK = FALSE)
+dataGKS <- getTableFromDoc("./02-01.docx")
+
+# оставляем только регионы, входящие в ЮФО 
+dataGKS <- dataGKS[[1]]
+dataGKS_SFO <- dataGKS[36:43,]
+
+# оставляем данные только за 2010 и 2019 гг.
+dataGKS_SFO <- dataGKS_SFO[,c(1,3,12)]
+
+# присваивание названий регионов, соответствующих названиям в переменной ru_name
+dataGKS_SFO[,1] <- c("Адыгея", "Калмыкия", "Республика Крым", "Краснодарский край", "Волгоградская область",                                 "Астраханская область", "Ростовская область", "Севастополь")
+
+# так как до 2014 г. Республика Крым и г. Севастополь входили в состав Украины, то 
+# для построения карты за 2010 г. уберем их из рассмотрения
+dataGKS_SFO2010 <- dataGKS_SFO[-c(3, 8), -3]
+dataGKS_SFO2010[, 2] <- as.numeric(dataGKS_SFO2010[, 2])
+dataGKS_SFO2019 <- dataGKS_SFO[, -2]
+dataGKS_SFO2019[, 2] <- as.numeric(dataGKS_SFO2019[, 2])
+
+# имена столбцов
+colnames(dataGKS_SFO2010) <- c("name", "populationSFO")
+colnames(dataGKS_SFO2019) <- c("name", "populationSFO")
+
+# полученные фреймы по численности за 2010 и 2019 гг.
+dataGKS_SFO2010
+dataGKS_SFO2019
+```
+
+### Построение карты по численности населения для регионов ЮФО за последний доступный год (2019) при помощи spplot
+
+```{r Карта 1, warning = F, message = F}
+# присоединяем таблицу с данными по численности населения
+Regions@data <- merge(Regions@data, dataGKS_SFO2019,
+                       by.x = 'name_ru', by.y = "name", all.x = F, sort = F)
+# задаём палитру
+mypalette <- colorRampPalette(c('#fff7f3', 'purple'))
+
+# построение карты
+spplot(Regions, 'populationSFO', 
+       col.regions = mypalette(20),  # определение цветовой шкалы
+       col = 'dark grey',            # цвет контурных линий на карте
+       main = 'Численность населения по региона ЮФО за 2019 г., в тыс. чел.',
+       panel = function(x, y, z, subscripts, ...){
+         panel.polygonsplot(x, y, z, subscripts, ...)
+         sp.text(coordinates(Regions),
+                 Regions$name[subscripts],
+                 cex = 0.75)
+       })
+```
+
+### Построение карты по численности населения для регионов ЮФО за 2010 г. при помощи ggplot2
+
+```{r Карта 2, warning = F, message = F}
+# прочитать данные уровня 4
+Regions <- readOGR("./admin_level_4.shp")
+
+# отбор регионов, входящих в ЮФО (без Крыма и Севастополя)
+SFO <- c("Адыгея", "Калмыкия", "Краснодарский край", "Волгоградская область",                                 "Астраханская область", "Ростовская область")
+Regions <- Regions[Regions@data$name_ru %in% SFO, ]
+
+# создаём столбец-ключ id для связи с другими таблицами
+# (названия регионов из столбца name_ru)
+Regions@data$id <- Regions@data$name_ru
+    
+# преобразовать SpatialPolygonsDataFrame в data.frame
+Regions.points <- fortify(Regions, region = 'id')
+    
+# добавить к координатам сведения о регионах
+Regions.df <- merge(Regions.points, Regions@data, by = 'id')
+# добавляем к координатам значения показателя для заливки
+dataGKS_SFO2010$id <- dataGKS_SFO2010$name 
+Regions.df <- merge(Regions.df, dataGKS_SFO2010[, c('id','populationSFO')])
+Regions.df$populationSFO <- as.numeric(Regions.df$populationSFO)
+
+# координаты центров полигонов (для подписей регионов)
+centroids.df <- as.data.frame(coordinates(Regions))
+centroids.df$id <- Regions@data$id
+colnames(centroids.df) <- c('long', 'lat', 'id')
+
+# создаём график
+gp <- ggplot() + 
+    geom_polygon(data =subset(Regions.df, !id %in% c("Адыгея")), aes(long, lat, group = group,
+                                        fill = populationSFO)) +
+    geom_polygon(data =subset(Regions.df, id %in% c("Адыгея")), aes(long, lat, group = group,
+                                        fill = populationSFO)) +
+    geom_path(data = Regions.df, aes(long, lat, group = group), 
+              color = 'dark Grey') +
+    coord_map(projection = 'gilbert') +
+    scale_fill_distiller(palette = 4,
+                         direction = 1,
+                         breaks = pretty_breaks(n = 5)) +
+    labs(x = 'Долгота', y = 'Широта', 
+         title = "Численность населения по региона ЮФО за 2010 г., в тыс. чел.") +
+    geom_text(data = centroids.df, 
+                       aes(long, lat, label = id))
+# выводим график
+gp
+```
